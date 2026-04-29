@@ -1,0 +1,5 @@
+{
+  "name": "Study Room Reservation",
+  "description": "A professional study room seat booking system with persistent storage and a clean grid interface.",
+  "requestFramePermissions": []
+}
