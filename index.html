@@ -22,7 +22,7 @@
             </div>
             
             <div id="slot-tabs" class="flex bg-slate-100 p-1 rounded-lg">
-                <button onclick="changeSlot('Morning')" id="btn-Morning" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all bg-white text-blue-600 shadow-sm">上午代</button>
+                <button onclick="changeSlot('Morning')" id="btn-Morning" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all bg-white text-blue-600 shadow-sm">上午</button>
                 <button onclick="changeSlot('Afternoon')" id="btn-Afternoon" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all text-slate-500 hover:text-slate-700">下午</button>
                 <button onclick="changeSlot('Evening')" id="btn-Evening" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all text-slate-500 hover:text-slate-700">晚上</button>
             </div>
@@ -140,6 +140,9 @@
     </main>
 
     <script>
+        // --- 1. 設定你的 Google Apps Script Web App URL ---
+        const APPS_SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
+
         // Constants
         const TOTAL_SEATS = 24;
         const LS_KEY = "records";
@@ -149,7 +152,21 @@
         let selectedSeat = null;
         let currentFilter = "all";
 
-        // 6. JS 必須有 3 個分離 function
+        // --- 2. 輔助函式：將資料同步至 Google Sheet ---
+        async function syncToSheet(payload) {
+            if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") return;
+            try {
+                await fetch(APPS_SCRIPT_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain" },
+                    body: JSON.stringify(payload)
+                });
+            } catch (error) {
+                console.warn("Google Sheet sync failed:", error);
+            }
+        }
+
+        // 6. JS 必須有 3 個分離 function (已修改以支援 Sheet 同步)
         function loadData() {
             const data = localStorage.getItem(LS_KEY);
             return data ? JSON.parse(data) : [];
@@ -159,15 +176,22 @@
             const records = loadData();
             records.push(newRecord);
             localStorage.setItem(LS_KEY, JSON.stringify(records));
+
+            // --- 3. 新增 record 觸發同步 ---
+            syncToSheet({ action: "create", record: newRecord });
         }
 
         function updateRecordStatus(id) {
             const records = loadData();
             const index = records.findIndex(r => r.id === id);
             if (index !== -1) {
-                records[index].status = records[index].status === "active" ? "done" : "active";
+                const newStatus = records[index].status === "active" ? "done" : "active";
+                records[index].status = newStatus;
                 localStorage.setItem(LS_KEY, JSON.stringify(records));
                 renderApp();
+
+                // --- 4. 修改 record 觸發同步 ---
+                syncToSheet({ action: "update", id: id, changes: { status: newStatus } });
             }
         }
 
@@ -335,6 +359,7 @@
             const nickname = document.getElementById('nickname-input').value.trim();
             if (!selectedSeat || !nickname) return;
 
+            // 6. 確保每筆新資料都有唯一的 id 和 createdAt
             const newRecord = {
                 id: Date.now() + "_" + Math.random().toString(36).slice(2, 6),
                 createdAt: new Date().toISOString(),
