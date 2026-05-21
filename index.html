@@ -21,10 +21,18 @@
                 <p class="text-slate-500 text-sm mt-1 italic font-serif">Quiet Study Room (Vanilla Version)</p>
             </div>
             
-            <div id="slot-tabs" class="flex bg-slate-100 p-1 rounded-lg">
-                <button onclick="changeSlot('Morning')" id="btn-Morning" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all bg-white text-blue-600 shadow-sm">上午</button>
-                <button onclick="changeSlot('Afternoon')" id="btn-Afternoon" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all text-slate-500 hover:text-slate-700">下午</button>
-                <button onclick="changeSlot('Evening')" id="btn-Evening" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all text-slate-500 hover:text-slate-700">晚上</button>
+            <div class="flex items-center gap-4">
+                <!-- AI 分析預約按鈕 -->
+                <button onclick="handleAIInsight()" id="aiBtn" class="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition-all shadow-sm disabled:opacity-50">
+                    <i data-lucide="sparkles" class="w-4 h-4"></i>
+                    <span id="aiBtnText">AI 分析預約</span>
+                </button>
+
+                <div id="slot-tabs" class="flex bg-slate-100 p-1 rounded-lg">
+                    <button onclick="changeSlot('Morning')" id="btn-Morning" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all bg-white text-blue-600 shadow-sm">上午</button>
+                    <button onclick="changeSlot('Afternoon')" id="btn-Afternoon" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all text-slate-500 hover:text-slate-700">下午</button>
+                    <button onclick="changeSlot('Evening')" id="btn-Evening" class="slot-btn px-4 py-2 rounded-md text-sm font-medium transition-all text-slate-500 hover:text-slate-700">晚上</button>
+                </div>
             </div>
         </div>
     </header>
@@ -152,7 +160,32 @@
         let selectedSeat = null;
         let currentFilter = "all";
 
-        // --- 2. 輔助函式：將資料同步至 Google Sheet ---
+        // 正規化 Sheet 資料 (對應大寫/小寫 Header，統一轉成小寫)
+        function normalizeRecord(record) {
+            return {
+                id: record.id || record.ID || "",
+                createdAt: record.createdAt || record.CreatedAt || "",
+                seat: Number(record.seat !== undefined ? record.seat : (record.Seat || 0)),
+                timeSlot: record.timeSlot || record.TimeSlot || "Morning",
+                reserver: record.reserver || record.Reserver || "Unknown",
+                status: record.status || record.Status || "active"
+            };
+        }
+
+        // 用 GET 抓取資料並透過 normalizeRecord 正規化
+        async function fetchRecordsFromSheet() {
+            if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.includes("PASTE")) return null;
+            try {
+                const res = await fetch(APPS_SCRIPT_URL);
+                const data = await res.json();
+                return Array.isArray(data) ? data.map(normalizeRecord) : null;
+            } catch (e) {
+                console.warn("從 Sheet 讀取失敗", e);
+                return null;
+            }
+        }
+
+        // 寫入 Google Sheet (背景執行)
         async function syncToSheet(payload) {
             if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") return;
             try {
@@ -166,36 +199,39 @@
             }
         }
 
-        // 6. JS 必須有 3 個分離 function (已修改以支援 Sheet 同步)
-        function loadData() {
+        // 讀取資料 (優先向遠端要，失敗/初次才用 localStorage)
+        async function loadData() {
+            const remote = await fetchRecordsFromSheet();
+            if (remote) {
+                localStorage.setItem(LS_KEY, JSON.stringify(remote));
+                return remote;
+            }
             const data = localStorage.getItem(LS_KEY);
             return data ? JSON.parse(data) : [];
         }
 
-        function saveData(newRecord) {
-            const records = loadData();
+        // 儲存預約，並即時渲染 (避免立刻重新 GET 蓋掉畫面)
+        async function saveData(newRecord) {
+            const records = await loadData();
             records.push(newRecord);
             localStorage.setItem(LS_KEY, JSON.stringify(records));
-
-            // --- 3. 新增 record 觸發同步 ---
             syncToSheet({ action: "create", record: newRecord });
+            await renderApp(records);
         }
 
-        function updateRecordStatus(id) {
-            const records = loadData();
+        // 變更預約狀態，並即時渲染
+        async function updateRecordStatus(id) {
+            const records = await loadData();
             const index = records.findIndex(r => r.id === id);
             if (index !== -1) {
-                const newStatus = records[index].status === "active" ? "done" : "active";
-                records[index].status = newStatus;
+                records[index].status = records[index].status === "active" ? "done" : "active";
                 localStorage.setItem(LS_KEY, JSON.stringify(records));
-                renderApp();
-
-                // --- 4. 修改 record 觸發同步 ---
-                syncToSheet({ action: "update", id: id, changes: { status: newStatus } });
+                syncToSheet({ action: "update", id: id, changes: { status: records[index].status } });
+                await renderApp(records);
             }
         }
 
-        function changeSlot(slot) {
+        async function changeSlot(slot) {
             currentSlot = slot;
             selectedSeat = null;
             
@@ -213,11 +249,11 @@
             document.getElementById('current-slot-label').innerText = slot === "Morning" ? "上午" : slot === "Afternoon" ? "下午" : "晚上";
             document.getElementById('form-slot-display').innerText = labels[slot];
             
-            renderApp();
+            await renderApp();
             updateSeatDisplay();
         }
 
-        function setFilter(filter) {
+        async function setFilter(filter) {
             currentFilter = filter;
             document.querySelectorAll('.filter-btn').forEach(btn => {
                 btn.classList.remove('bg-white', 'text-blue-600', 'shadow-sm');
@@ -227,7 +263,7 @@
             activeFilter.classList.add('bg-white', 'text-blue-600', 'shadow-sm');
             activeFilter.classList.remove('text-slate-500');
             
-            renderList();
+            await renderList();
         }
 
         function updateSeatDisplay() {
@@ -244,14 +280,18 @@
             }
         }
 
-        function selectSeat(id) {
+        async function selectSeat(id) {
             selectedSeat = id;
             updateSeatDisplay();
-            renderSeats();
+            
+            // 為了不讓點擊座位產生 network lag，這裡傳入 local 的 records
+            const data = localStorage.getItem(LS_KEY);
+            const localRecords = data ? JSON.parse(data) : await loadData();
+            await renderSeats(localRecords);
         }
 
-        function renderSeats() {
-            const records = loadData();
+        async function renderSeats(recordsOverride) {
+            const records = recordsOverride || await loadData();
             const grid = document.getElementById('seat-grid');
             grid.innerHTML = '';
 
@@ -285,8 +325,8 @@
             lucide.createIcons();
         }
 
-        function renderList() {
-            const records = loadData();
+        async function renderList(recordsOverride) {
+            const records = recordsOverride || await loadData();
             const listContainer = document.getElementById('reservation-list');
             listContainer.innerHTML = '';
 
@@ -348,18 +388,19 @@
             document.getElementById('inline-stats').innerText = `active: ${stats.active} | done: ${stats.done} | total: ${stats.total}`;
         }
 
-        function renderApp() {
-            renderSeats();
-            renderList();
+        async function renderApp(recordsOverride) {
+            // 將 records 往下傳遞給 Seats 和 List，確保同步時只讀一次或使用傳入的資料
+            const records = recordsOverride || await loadData();
+            await renderSeats(records);
+            await renderList(records);
         }
 
         // Form Submission
-        document.getElementById('reservation-form').onsubmit = (e) => {
+        document.getElementById('reservation-form').onsubmit = async (e) => {
             e.preventDefault();
             const nickname = document.getElementById('nickname-input').value.trim();
             if (!selectedSeat || !nickname) return;
 
-            // 6. 確保每筆新資料都有唯一的 id 和 createdAt
             const newRecord = {
                 id: Date.now() + "_" + Math.random().toString(36).slice(2, 6),
                 createdAt: new Date().toISOString(),
@@ -369,19 +410,55 @@
                 status: "active"
             };
 
-            saveData(newRecord);
+            await saveData(newRecord);
             
             // Success reset
             document.getElementById('nickname-input').value = "";
             selectedSeat = null;
             updateSeatDisplay();
-            renderApp();
         };
 
+        // --- AI 洞察功能區塊 ---
+        async function askAI(userPrompt) {
+            const res = await fetch(APPS_SCRIPT_URL, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain" },
+                body: JSON.stringify({ action: "askAI", prompt: userPrompt })
+            });
+            const data = await res.json();
+            return data.result || data.error || "AI 冇回應";
+        }
+
+        async function handleAIInsight() {
+            const btn = document.getElementById('aiBtn');
+            const text = document.getElementById('aiBtnText');
+            btn.disabled = true;
+            text.textContent = '思考中...';
+            try {
+                const records = await loadData();
+                if (records.length === 0) { 
+                    alert('目前沒有預約資料可以分析'); 
+                    return; 
+                }
+                const summaryInput = records.slice(0, 30).map(r =>
+                    `[${r.timeSlot}] 座位 ${r.seat} - ${r.reserver} (${r.status})`
+                ).join('\n');
+                const prompt = '以下是自習室的預約紀錄。請用繁體中文，用 3-5 句話分析哪個時段最熱門、預約完成率，以及有沒有什麼明顯的現象:\n\n' + summaryInput;
+                
+                const result = await askAI(prompt);
+                alert(result);
+            } catch (e) {
+                alert('AI 出錯：' + e.message);
+            } finally {
+                btn.disabled = false;
+                text.textContent = 'AI 分析預約';
+            }
+        }
+
         // Initial Load
-        window.onload = () => {
+        window.onload = async () => {
             lucide.createIcons();
-            renderApp();
+            await renderApp();
         };
     </script>
 </body>
